@@ -1,0 +1,205 @@
+// === FRONTEND ===
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reservas XRF</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@5.11.3/main.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@5.11.3/main.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/emailjs-com@3/dist/email.min.js"></script>
+</head>
+<body>
+    <h1>Reservar Equipo XRF</h1>
+    <form id="reservationForm">
+        <label for="name">Nombre:</label>
+        <input type="text" id="name" required>
+        <br>
+        <label for="email">Correo:</label>
+        <input type="email" id="email" required>
+        <br>
+        <label for="startDate">Inicio:</label>
+        <input type="datetime-local" id="startDate" required>
+        <br>
+        <label for="endDate">Fin:</label>
+        <input type="datetime-local" id="endDate" required>
+        <br>
+        <button type="submit">Reservar</button>
+    </form>
+    <div id="calendar"></div>
+
+    <script>
+        // Inicializar el calendario
+        document.addEventListener('DOMContentLoaded', function () {
+            const calendarEl = document.getElementById('calendar');
+            const calendar = new FullCalendar.Calendar(calendarEl, {
+                initialView: 'timeGridWeek',
+                businessHours: {
+                    daysOfWeek: [1, 2, 3, 4, 5], // Lunes a Viernes
+                    startTime: '09:00',
+                    endTime: '18:00',
+                },
+                selectable: true,
+                events: [],
+            });
+
+            calendar.render();
+
+            document.getElementById('reservationForm').addEventListener('submit', function (e) {
+                e.preventDefault();
+
+                const name = document.getElementById('name').value;
+                const email = document.getElementById('email').value;
+                const startDate = new Date(document.getElementById('startDate').value);
+                const endDate = new Date(document.getElementById('endDate').value);
+
+                if (!email.endsWith('@upc.edu')) {
+                    alert('Solo se permiten correos @upc.edu.');
+                    return;
+                }
+
+                if (startDate.getHours() < 9 || endDate.getHours() > 18 || startDate.getDay() === 0 || startDate.getDay() === 6) {
+                    alert('Las reservas solo se permiten de Lunes a Viernes, entre las 9:00 y las 18:00.');
+                    return;
+                }
+
+                const duration = (endDate - startDate) / (1000 * 60 * 60);
+                if (duration > 2) {
+                    alert('Las reservas no pueden exceder las 2 horas.');
+                    return;
+                }
+
+                const overlapping = calendar.getEvents().some(event => {
+                    return startDate < event.end && endDate > event.start;
+                });
+
+                if (overlapping) {
+                    alert('El horario de reserva está ocupado.');
+                    return;
+                }
+
+                calendar.addEvent({
+                    title: `${name} - XRF Booking`,
+                    start: startDate,
+                    end: endDate,
+                    allDay: false,
+                    color: 'red',
+                });
+
+                sendConfirmationEmail(name, email, startDate, endDate);
+                this.reset();
+                alert('Reserva confirmada.');
+            });
+
+            function sendConfirmationEmail(name, email, startDate, endDate) {
+                emailjs.init("udAu81DX6mlRry1yd"); // Reemplaza con tu clave pública de EmailJS
+                const formattedStart = startDate.toLocaleString();
+                const formattedEnd = endDate.toLocaleString();
+                const templateParams = {
+                    user_name: name,
+                    user_email: email,
+                    start_date: formattedStart,
+                    end_date: formattedEnd,
+                    admin_emails: "gladys.alfonsina.ochoa@upc.edu, kalyani.mohanty@upc.edu",
+                };
+
+                emailjs.send("XRF", "template_ba6paxk", templateParams)
+                    .then(function (response) {
+                        console.log("Correo enviado:", response.status, response.text);
+                    }, function (error) {
+                        console.error("Error al enviar el correo:", error);
+                    });
+            }
+
+            function generateSpreadsheet() {
+                const events = calendar.getEvents();
+                const data = events.map(event => ({
+                    Nombre: event.title.split(' - ')[0],
+                    Inicio: event.start.toISOString(),
+                    Fin: event.end.toISOString(),
+                }));
+
+                const ws = XLSX.utils.json_to_sheet(data);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, 'Reservas');
+
+                return XLSX.write(wb, { bookType: 'xlsx', type: 'binary' });
+            }
+
+            function sendMonthlySpreadsheet() {
+                const binaryData = generateSpreadsheet();
+                const blob = new Blob([s2ab(binaryData)], { type: 'application/octet-stream' });
+
+                const formData = new FormData();
+                formData.append('file', blob, 'reservas.xlsx');
+
+                fetch('/send-spreadsheet', {
+                    method: 'POST',
+                    body: formData,
+                })
+                .then(response => response.json())
+                .then(data => console.log('Hoja de cálculo enviada:', data))
+                .catch(err => console.error('Error enviando la hoja de cálculo:', err));
+            }
+
+            const today = new Date();
+            if (today.getDate() === 28) {
+                sendMonthlySpreadsheet();
+            }
+
+            function s2ab(s) {
+                const buf = new ArrayBuffer(s.length);
+                const view = new Uint8Array(buf);
+                for (let i = 0; i < s.length; i++) view[i] = s.charCodeAt(i) & 0xFF;
+                return buf;
+            }
+        });
+    </script>
+</body>
+</html>
+
+// === BACKEND ===
+const express = require('express');
+const multer = require('multer');
+const nodemailer = require('nodemailer');
+const fs = require('fs');
+
+const app = express();
+const upload = multer({ dest: 'uploads/' });
+
+app.post('/send-spreadsheet', upload.single('file'), async (req, res) => {
+    try {
+        const transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: 'tu.correo@gmail.com',
+                pass: 'tu_contraseña',
+            },
+        });
+
+        const mailOptions = {
+            from: 'tu.correo@gmail.com',
+            to: 'gladys.alfonsina.ochoa@upc.edu, kalyani.mohanty@upc.edu',
+            subject: 'Resumen de Reservas - XRF',
+            text: 'Adjunto encontrarás la hoja de cálculo con el resumen de las reservas.',
+            attachments: [
+                {
+                    filename: 'reservas.xlsx',
+                    path: req.file.path,
+                },
+            ],
+        };
+
+        await transporter.sendMail(mailOptions);
+        fs.unlinkSync(req.file.path);
+        res.json({ message: 'Hoja de cálculo enviada exitosamente.' });
+    } catch (error) {
+        console.error('Error enviando el correo:', error);
+        res.status(500).json({ error: 'Error enviando el correo.' });
+    }
+});
+
+app.listen(3000, () => {
+    console.log('Servidor escuchando en http://localhost:3000');
+});
